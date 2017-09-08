@@ -34,6 +34,41 @@ namespace OpenXmlPowerTools
         public bool ApplyRunContentTypes = true;
     }
 
+    public class GlobalValidationRule
+    {
+        // I am unclear as to whether I want to validate on the Word document, or on the Content Type XML.  If I validate on the ContentTypeXml, then it would be convenient
+        // to assign GUIDs to all paragraphs and tables in the document, and propagate this information through to the ContentTypeXml.  This would enable me to find the
+        // erroneous paragraph in the source document.
+
+        public string RuleName;
+        public Func<GlobalValidationRule, WordprocessingDocument, XElement, WmlToXmlSettings, List<WmlToXmlValidationError>> GlobalRuleLambda;
+        public bool IsOnlyWarning;
+        public string Message;
+    }
+
+    public class BlockLevelContentValidationRule
+    {
+        // I am unclear as to whether I want to validate on the Word document, or on the Content Type XML.  If I validate on the ContentTypeXml, then it would be convenient
+        // to assign GUIDs to all paragraphs and tables in the document, and propagate this information through to the ContentTypeXml.  This would enable me to find the
+        // erroneous paragraph in the source document.
+
+        public string RuleName;
+        public Regex StyleNameRegex;
+        public Func<XElement, BlockLevelContentValidationRule, WordprocessingDocument, XElement, WmlToXmlSettings, List<WmlToXmlValidationError>> BlockLevelContentRuleLambda;
+        public bool IsOnlyWarning;
+        public string Message;
+    }
+
+    public class WmlToXmlValidationError
+    {
+        public string RuleName;
+        public string ErrorMessage;
+        public string BlockLevelContentIdentifier;  // this string is the same as the unid that is in the source document.  This string should be sufficient to identify and find any
+                                                    // invalid paragraph, table, row, cell, or anything else in the source document.
+                                                    // for now, i am putting an integer into this attribute / id, but I expect that this will be more elaborate than this.
+                                                    // I need to again research exactly how to move to a specific paragraph or table in a document, in a VSTO app.
+    }
+
     public class WmlToXmlProgressInfo
     {
         public int ContentCount;
@@ -52,6 +87,8 @@ namespace OpenXmlPowerTools
         public List<ContentTypeRule> DocumentTypeContentTypeRules;
         public List<ContentTypeRule> DocumentContentTypeRules;
         public List<ContentTypeRule> RunContentTypeRules;
+        public List<GlobalValidationRule> GlobalValidationRules;
+        public List<BlockLevelContentValidationRule> BlockLevelContentValidationRules;
         public ListItemRetrieverSettings ListItemRetrieverSettings;
         public bool? InjectCommentForContentTypes;
         public XElement ContentTypeHierarchyDefinition;
@@ -69,6 +106,8 @@ namespace OpenXmlPowerTools
             List<ContentTypeRule> documentTypeContentTypeRules,
             List<ContentTypeRule> documentContentTypeRules,
             List<ContentTypeRule> runContentTypeRules,
+            List<GlobalValidationRule> globalValidationRules,
+            List<BlockLevelContentValidationRule> blockLevelContentValidationRules,
             XElement contentTypeHierarchyDefinition,
             Func<XElement, WmlToXmlSettings, bool> contentTypeHierarchyLambda,
             Dictionary<string, Func<string, OpenXmlPart, XElement, WmlToXmlSettings, object>> xmlGenerationLambdas,
@@ -79,6 +118,8 @@ namespace OpenXmlPowerTools
             DocumentTypeContentTypeRules = documentTypeContentTypeRules;
             DocumentContentTypeRules = documentContentTypeRules;
             RunContentTypeRules = runContentTypeRules;
+            GlobalValidationRules = globalValidationRules;
+            BlockLevelContentValidationRules = blockLevelContentValidationRules;
             ListItemRetrieverSettings = new ListItemRetrieverSettings();
             ContentTypeHierarchyDefinition = contentTypeHierarchyDefinition;
             ContentTypeHierarchyLambda = contentTypeHierarchyLambda;
@@ -92,6 +133,8 @@ namespace OpenXmlPowerTools
             List<ContentTypeRule> documentTypeContentTypeRules,
             List<ContentTypeRule> documentContentTypeRules,
             List<ContentTypeRule> runContentTypeRules,
+            List<GlobalValidationRule> globalValidationRules,
+            List<BlockLevelContentValidationRule> blockLevelContentValidationRules,
             Func<XElement, WmlToXmlSettings, bool> contentTypeHierarchyLambda,
             Dictionary<string, Func<string, OpenXmlPart, XElement, WmlToXmlSettings, object>> xmlGenerationLambdas,
             ListItemRetrieverSettings listItemRetrieverSettings,
@@ -102,6 +145,8 @@ namespace OpenXmlPowerTools
             DocumentTypeContentTypeRules = documentTypeContentTypeRules;
             DocumentContentTypeRules = documentContentTypeRules;
             RunContentTypeRules = runContentTypeRules;
+            GlobalValidationRules = globalValidationRules;
+            BlockLevelContentValidationRules = blockLevelContentValidationRules;
             ListItemRetrieverSettings = listItemRetrieverSettings;
             ContentTypeHierarchyLambda = contentTypeHierarchyLambda;
             XmlGenerationLambdas = xmlGenerationLambdas;
@@ -956,8 +1001,17 @@ namespace OpenXmlPowerTools
                                 if (n != null)
                                 {
                                     n.Add(new XAttribute("Lang", lang));
+                                    if (element.Attribute(PtOpenXml.Unid) != null)
+                                        n.Add(new XAttribute("Unid", element.Attribute(PtOpenXml.Unid).Value));
                                     return n;
                                 }
+                            }
+
+                            var n2 = newElement as XElement;
+                            if (n2 != null && element.Attribute(PtOpenXml.Unid) != null)
+                            {
+                                n2.Add(new XAttribute("Unid", element.Attribute(PtOpenXml.Unid).Value));
+                                return n2;
                             }
 
                             return newElement;
@@ -1761,6 +1815,128 @@ namespace OpenXmlPowerTools
         public class ContentApplierException : Exception
         {
             public ContentApplierException(string message) : base(message) { }
+        }
+
+        public static List<WmlToXmlValidationError> ValidateContentTypeXml(WmlDocument document, XElement contentTypeXml, WmlToXmlSettings settings)
+        {
+            List<WmlToXmlValidationError> errorList = new List<WmlToXmlValidationError>();
+
+            using (MemoryStream ms = new MemoryStream())
+            {
+                ms.Write(document.DocumentByteArray, 0, document.DocumentByteArray.Length);
+                using (WordprocessingDocument wDoc = WordprocessingDocument.Open(ms, true))
+                {
+                    foreach (var vr in settings.GlobalValidationRules)
+                    {
+                        if (vr.GlobalRuleLambda != null)
+                        {
+                            var valErrors = vr.GlobalRuleLambda(vr, wDoc, contentTypeXml, settings);
+                            if (valErrors != null && valErrors.Any())
+                            {
+                                foreach (var ve in valErrors)
+                                {
+                                    errorList.Add(ve);
+                                }
+                            }
+                        }
+                    }
+                    var mXDoc = wDoc.MainDocumentPart.GetXDocument();
+                    var sXDoc = wDoc.MainDocumentPart.StyleDefinitionsPart.GetXDocument();
+
+                    foreach (var blc in mXDoc.Root.Descendants().Where(d => d.Name == W.p || d.Name == W.tbl || d.Name == W.tr || d.Name == W.tc))
+                    {
+                        var styleId = (string)blc
+                            .Elements(W.pPr)
+                            .Elements(W.pStyle)
+                            .Attributes(W.val)
+                            .FirstOrDefault();
+                        var styleName = (string)sXDoc
+                            .Root
+                            .Elements(W.style)
+                            .Where(s => (string)s.Attribute(W.styleId) == styleId)
+                            .Elements(W.name)
+                            .Attributes(W.val)
+                            .FirstOrDefault();
+
+                        foreach (var vr in settings.BlockLevelContentValidationRules)
+                        {
+                            bool matchStyle = true;
+                            if (vr.StyleNameRegex != null)
+                            {
+                                if (styleName == null)
+                                {
+                                    matchStyle = false;
+                                }
+                                else
+                                {
+                                    var match = vr.StyleNameRegex.Match(styleName);
+                                    matchStyle = match.Success;
+                                }
+                            }
+                            if (matchStyle && vr.BlockLevelContentRuleLambda != null)
+                            {
+                                var valErrors = vr.BlockLevelContentRuleLambda(blc, vr, wDoc, contentTypeXml, settings);
+                                if (valErrors != null && valErrors.Any())
+                                {
+                                    foreach (var ve in valErrors)
+                                    {
+                                        errorList.Add(ve);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            return errorList;
+        }
+    }
+
+    public static class WmlToXmlUtil
+    {
+        public static WmlDocument AssignUnidToBlc(WmlDocument document)
+        {
+            using (MemoryStream ms = new MemoryStream())
+            {
+                ms.Write(document.DocumentByteArray, 0, document.DocumentByteArray.Length);
+                using (WordprocessingDocument wDoc = WordprocessingDocument.Open(ms, true))
+                {
+                    var xDoc = wDoc.MainDocumentPart.GetXDocument();
+                    var unid = 1;
+                    foreach (var b in xDoc.Root.Descendants().Where(d => d.Name == W.p || d.Name == W.tbl || d.Name == W.tr || d.Name == W.tc))
+                    {
+                        var unidString = string.Format("{0:000000000}", unid++);
+                        b.Add(new XAttribute(PtOpenXml.Unid, unidString));
+                    }
+                    IgnorePt14Namespace(xDoc.Root);
+                    wDoc.MainDocumentPart.PutXDocument();
+                }
+                var result = new WmlDocument(document.FileName, ms.ToArray());
+                return result;
+            }
+        }
+
+        private static void IgnorePt14Namespace(XElement root)
+        {
+            if (root.Attribute(XNamespace.Xmlns + "pt14") == null)
+            {
+                root.Add(new XAttribute(XNamespace.Xmlns + "pt14", PtOpenXml.pt.NamespaceName));
+            }
+            var ignorable = (string)root.Attribute(MC.Ignorable);
+            if (ignorable != null)
+            {
+                var list = ignorable.Split(' ');
+                if (!list.Contains("pt14"))
+                {
+                    ignorable += " pt14";
+                    root.Attribute(MC.Ignorable).Value = ignorable;
+                }
+            }
+            else
+            {
+                root.Add(new XAttribute(MC.Ignorable, "pt14"));
+            }
         }
     }
 }
