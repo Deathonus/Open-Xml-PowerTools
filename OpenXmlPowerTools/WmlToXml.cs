@@ -1903,17 +1903,44 @@ namespace OpenXmlPowerTools
                 using (WordprocessingDocument wDoc = WordprocessingDocument.Open(ms, true))
                 {
                     var xDoc = wDoc.MainDocumentPart.GetXDocument();
+                    List<XElement> elementsInOrder = new List<XElement>();
+                    DetermineElementOrder(xDoc.Root.Descendants(W.body).FirstOrDefault(), elementsInOrder);
                     var unid = 1;
-                    foreach (var b in xDoc.Root.Descendants().Where(d => d.Name == W.p || d.Name == W.tbl || d.Name == W.tr || d.Name == W.tc))
+                    foreach (var b in elementsInOrder)
                     {
-                        var unidString = string.Format("{0:000000000}", unid++);
+                        var unidString = unid.ToString();
                         b.Add(new XAttribute(PtOpenXml.Unid, unidString));
+                        unid++;
                     }
                     IgnorePt14Namespace(xDoc.Root);
                     wDoc.MainDocumentPart.PutXDocument();
                 }
                 var result = new WmlDocument(document.FileName, ms.ToArray());
                 return result;
+            }
+        }
+
+        private static void DetermineElementOrder(XElement element, List<XElement> elementList)
+        {
+            foreach (var childElement in element.Elements())
+            {
+                if (childElement.Name == W.p)
+                {
+                    elementList.Add(childElement);
+                    continue;
+                }
+                else if (childElement.Name == W.tbl || childElement.Name == W.tc)
+                {
+                    DetermineElementOrder(childElement, elementList);
+                    continue;
+                }
+                else if (childElement.Name == W.tr)
+                {
+                    foreach (var tc in childElement.Elements())
+                        DetermineElementOrder(tc, elementList);
+                    elementList.Add(childElement);
+                    continue;
+                }
             }
         }
 
