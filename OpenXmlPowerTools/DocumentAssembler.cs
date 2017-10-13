@@ -40,7 +40,7 @@ namespace OpenXmlPowerTools
             XDocument xDoc = data.GetXDocument();
             return AssembleDocument(templateDoc, xDoc.Root, out templateError);
         }
-
+        
         public static WmlDocument AssembleDocument(WmlDocument templateDoc, XElement data, out bool templateError)
         {
             byte[] byteArray = templateDoc.DocumentByteArray;
@@ -55,7 +55,7 @@ namespace OpenXmlPowerTools
                     var te = new TemplateError();
                     foreach (var part in wordDoc.ContentParts())
                     {
-                        ProcessTemplatePart(data, te, part);
+                        ProcessTemplatePart(data, te, part, wordDoc.MainDocumentPart);
                     }
                     templateError = te.HasError;
                 }
@@ -64,9 +64,36 @@ namespace OpenXmlPowerTools
             }
         }
 
-        private static void ProcessTemplatePart(XElement data, TemplateError te, OpenXmlPart part)
+        private static void ProcessImages(XElement element, MainDocumentPart mainDocPart)
+        {
+            var blips = element.Descendants(A.blip);
+
+            foreach (var blip in blips)
+            {
+                var rId = blip.Attribute(R.embed);
+                if (rId != null)
+                {
+                    if (imagePathDictonary.ContainsKey(rId.Value))
+                    {
+                        var imagePart = mainDocPart.AddImagePart(ImagePartType.Png);
+                        using (var stream = new FileStream(imagePathDictonary[rId.Value], FileMode.Open))
+                        {
+                            imagePart.FeedData(stream);
+                        }
+                        blip.Attribute(R.embed).SetValue(mainDocPart.GetIdOfPart(imagePart));
+                    }
+                }
+            }
+        }
+
+        private static Dictionary<string, string> imagePathDictonary;
+
+        private static void ProcessTemplatePart(XElement data, TemplateError te, OpenXmlPart part, MainDocumentPart mainDocPart)
         {
             XDocument xDoc = part.GetXDocument();
+
+            // initialize dictonary used to track image data; this could be worked out by inserting data held in this into the xml data
+            imagePathDictonary = new Dictionary<string, string>();
 
             var xDocRoot = RemoveGoBackBookmarks(xDoc.Root);
 
@@ -81,6 +108,7 @@ namespace OpenXmlPowerTools
             // if there is a matching pair, then is OK.
             xDocRoot = (XElement)ForceBlockLevelAsAppropriate(xDocRoot, te);
 
+            // This Normalizes/Condenses Image metadata aswell.
             NormalizeTablesRepeatAndConditional(xDocRoot, te);
 
             // any EndRepeat, EndConditional that remain are orphans, so replace with an error
@@ -88,6 +116,9 @@ namespace OpenXmlPowerTools
 
             // do the actual content replacement
             xDocRoot = (XElement)ContentReplacementTransform(xDocRoot, data, te);
+
+            // Add image files aswell as update placeholder relationship ids
+            ProcessImages(xDocRoot, mainDocPart);
 
             xDoc.Elements().First().ReplaceWith(xDocRoot);
             part.PutXDocument();
@@ -228,6 +259,22 @@ namespace OpenXmlPowerTools
                 table.Add(followingElement);
             }
 
+            var images = xDoc.Descendants(PA.Image).ToList();
+            foreach (var image in images)
+            {
+                var followingElement = image.ElementsAfterSelf(W.p).FirstOrDefault();
+                if (followingElement == null || followingElement.Descendants(W.drawing).FirstOrDefault() == null)
+                {
+                    image.ReplaceWith(CreateParaErrorMessage("Table metadata is not immediately followed by a paragraph that contains a drawing element", te));
+                    continue;
+                }
+                // remove old paragraph that held old Image metadata marker
+                image.RemoveNodes();
+                // detach w:p containing image element from parent, then add to metadata
+                followingElement.Remove();
+                image.Add(followingElement);
+            }
+
             int repeatDepth = 0;
             int conditionalDepth = 0;
             foreach (var metadata in xDoc.Descendants().Where(d =>
@@ -305,6 +352,7 @@ namespace OpenXmlPowerTools
             "EndRepeat",
             "Conditional",
             "EndConditional",
+            "Image"
         };
 
         private static object TransformToMetadata(XNode node, XElement data, TemplateError te)
@@ -550,6 +598,20 @@ namespace OpenXmlPowerTools
                                 </xs:schema>",
                         }
                     },
+                    {
+                        PA.Image,
+                        new PASchemaSet()
+                        {
+                            XsdMarkup =
+                            @"<xs:schema attributeFormDefault='unqualified' elementFormDefault='qualified' xmlns:xs='http://www.w3.org/2001/XMLSchema'>
+                                  <xs:element name='Image'>
+                                    <xs:complexType>
+                                      <xs:attribute name='Select' type='xs:string' use='required' />
+                                    </xs:complexType>
+                                  </xs:element>
+                                </xs:schema>",
+                        }
+                    },
                 };
                 foreach (var item in s_PASchemaSets)
                 {
@@ -584,6 +646,8 @@ namespace OpenXmlPowerTools
             public static XName EndRepeat = "EndRepeat";
             public static XName Conditional = "Conditional";
             public static XName EndConditional = "EndConditional";
+
+            public static XName Image = "Image";
 
             public static XName Select = "Select";
             public static XName Optional = "Optional";
@@ -788,6 +852,38 @@ namespace OpenXmlPowerTools
                         return content;
                     }
                     return null;
+                }
+                if (element.Name == PA.Image)
+                {
+                    var xPath = (string)element.Attribute(PA.Select);
+
+                    string imagePath;
+                    try
+                    {
+                        imagePath = EvaluateXPathToString(data, xPath, false);
+                    }
+                    catch (XPathException e)
+                    {
+                        return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
+                    }
+                    
+                    if (imagePath == null || !File.Exists(imagePath))
+                    {
+                        return CreateContextErrorMessage(element, "Image path was either not supplied or invalid", templateError);
+                    }
+
+                    XElement para = element.Descendants(W.p).FirstOrDefault();
+                    XElement blip = para.Descendants(A.blip).FirstOrDefault();
+
+                    if (blip == null)
+                    {
+                        return CreateContextErrorMessage(element, "Paragraph that followed the image tag did not have a blip element within it", templateError);
+                    }
+                    
+                    blip.Attribute(R.embed).SetValue("placeholderId" + imagePathDictonary.Count.ToString());
+                    imagePathDictonary.Add("placeholderId" + imagePathDictonary.Count.ToString(), imagePath);
+
+                    return para;
                 }
                 return new XElement(element.Name,
                     element.Attributes(),
