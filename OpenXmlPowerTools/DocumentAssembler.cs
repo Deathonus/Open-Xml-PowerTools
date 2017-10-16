@@ -55,7 +55,11 @@ namespace OpenXmlPowerTools
                     var te = new TemplateError();
                     foreach (var part in wordDoc.ContentParts())
                     {
-                        ProcessTemplatePart(data, te, part, wordDoc.MainDocumentPart);
+                        // initialize dictonary used to track image data; this could be worked out by inserting data held in this into the xml data
+                        imagePathDictonary = new Dictionary<string, string>();
+
+                        ProcessTemplatePart(data, te, part);
+                        ProcessImages(wordDoc, part);
                     }
                     templateError = te.HasError;
                 }
@@ -64,10 +68,9 @@ namespace OpenXmlPowerTools
             }
         }
 
-        private static void ProcessImages(XElement element, MainDocumentPart mainDocPart)
+        private static void InsertImagesUpdateRelationships(XElement element, MainDocumentPart mainDocPart)
         {
             var blips = element.Descendants(A.blip);
-
             foreach (var blip in blips)
             {
                 var rId = blip.Attribute(R.embed);
@@ -86,14 +89,24 @@ namespace OpenXmlPowerTools
             }
         }
 
-        private static Dictionary<string, string> imagePathDictonary;
-
-        private static void ProcessTemplatePart(XElement data, TemplateError te, OpenXmlPart part, MainDocumentPart mainDocPart)
+        private static void ProcessImages(WordprocessingDocument doc, OpenXmlPart part)
         {
             XDocument xDoc = part.GetXDocument();
+            var xDocRoot = xDoc.Root;
 
-            // initialize dictonary used to track image data; this could be worked out by inserting data held in this into the xml data
-            imagePathDictonary = new Dictionary<string, string>();
+            // Add image files aswell as update placeholder relationship ids
+            InsertImagesUpdateRelationships(xDocRoot, doc.MainDocumentPart);
+
+            xDoc.Elements().First().ReplaceWith(xDocRoot);
+            part.PutXDocument();
+            return;
+        }
+
+        private static Dictionary<string, string> imagePathDictonary;
+
+        private static void ProcessTemplatePart(XElement data, TemplateError te, OpenXmlPart part)
+        {
+            XDocument xDoc = part.GetXDocument();
 
             var xDocRoot = RemoveGoBackBookmarks(xDoc.Root);
 
@@ -116,9 +129,6 @@ namespace OpenXmlPowerTools
 
             // do the actual content replacement
             xDocRoot = (XElement)ContentReplacementTransform(xDocRoot, data, te);
-
-            // Add image files aswell as update placeholder relationship ids
-            ProcessImages(xDocRoot, mainDocPart);
 
             xDoc.Elements().First().ReplaceWith(xDocRoot);
             part.PutXDocument();
@@ -262,10 +272,10 @@ namespace OpenXmlPowerTools
             var images = xDoc.Descendants(PA.Image).ToList();
             foreach (var image in images)
             {
-                var followingElement = image.ElementsAfterSelf(W.p).FirstOrDefault();
+                var followingElement = image.ElementsAfterSelf().FirstOrDefault();
                 if (followingElement == null || followingElement.Descendants(W.drawing).FirstOrDefault() == null)
                 {
-                    image.ReplaceWith(CreateParaErrorMessage("Table metadata is not immediately followed by a paragraph that contains a drawing element", te));
+                    image.ReplaceWith(CreateParaErrorMessage("Table metadata is not immediately followed by an element that contains a drawing element", te));
                     continue;
                 }
                 // remove old paragraph that held old Image metadata marker
@@ -872,18 +882,19 @@ namespace OpenXmlPowerTools
                         return CreateContextErrorMessage(element, "Image path was either not supplied or invalid", templateError);
                     }
 
-                    XElement para = element.Descendants(W.p).FirstOrDefault();
-                    XElement blip = para.Descendants(A.blip).FirstOrDefault();
+                    XElement blip = element.Descendants(A.blip).FirstOrDefault();
 
                     if (blip == null)
                     {
-                        return CreateContextErrorMessage(element, "Paragraph that followed the image tag did not have a blip element within it", templateError);
+                        return CreateContextErrorMessage(element, "Element that followed the image tag did not have a blip element within it", templateError);
                     }
-                    
-                    blip.Attribute(R.embed).SetValue("placeholderId" + imagePathDictonary.Count.ToString());
-                    imagePathDictonary.Add("placeholderId" + imagePathDictonary.Count.ToString(), imagePath);
 
-                    return para;
+                    string tempRefenceName = "placeholderId" + imagePathDictonary.Count.ToString();
+                    blip.Attribute(R.embed).SetValue(tempRefenceName);
+                    imagePathDictonary.Add(tempRefenceName, imagePath);
+
+                    var content = element.Elements().Select(e => ContentReplacementTransform(e, data, templateError)).ToList();
+                    return content;
                 }
                 return new XElement(element.Name,
                     element.Attributes(),
