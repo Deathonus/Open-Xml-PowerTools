@@ -70,6 +70,13 @@ namespace OpenXmlPowerTools
 
         private static void InsertImagesUpdateRelationships(XElement element, MainDocumentPart mainDocPart)
         {
+            Dictionary<String, ImagePartType> imagePartTypes = new Dictionary<string, ImagePartType>();
+            foreach (ImagePartType imagePartType in Enum.GetValues(typeof(ImagePartType)))
+            {
+                imagePartTypes.Add("." + imagePartType.ToString().ToLower(), imagePartType);
+            }
+            imagePartTypes.Add(".jpg", ImagePartType.Jpeg);
+
             var blips = element.Descendants(A.blip);
             foreach (var blip in blips)
             {
@@ -78,12 +85,23 @@ namespace OpenXmlPowerTools
                 {
                     if (imagePathDictonary.ContainsKey(rId.Value))
                     {
-                        var imagePart = mainDocPart.AddImagePart(ImagePartType.Png);
-                        using (var stream = new FileStream(imagePathDictonary[rId.Value], FileMode.Open))
+                        var ext = new System.IO.FileInfo(imagePathDictonary[rId.Value]).Extension.ToLower();
+
+                        if (imagePartTypes.ContainsKey(ext))
                         {
-                            imagePart.FeedData(stream);
+                            var imagePart = mainDocPart.AddImagePart(imagePartTypes[ext]);
+
+                            using (var stream = new FileStream(imagePathDictonary[rId.Value], FileMode.Open))
+                            {
+                                imagePart.FeedData(stream);
+                            }
+                            blip.Attribute(R.embed).SetValue(mainDocPart.GetIdOfPart(imagePart));
                         }
-                        blip.Attribute(R.embed).SetValue(mainDocPart.GetIdOfPart(imagePart));
+                        else
+                        {
+                            // What do we do if a file does not have a supported extension?  If it stays to nothing the placeholder ref won't change;
+                            // So the image shown will be the classic white box with a red X in a box on the top left and a message saying the image can't be shown.
+                        }
                     }
                 }
             }
