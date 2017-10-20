@@ -107,6 +107,38 @@ namespace OpenXmlPowerTools
             }
         }
 
+        private static void EnsureUniqueDocumentProperties(XElement element)
+        {
+            XName attribName = "id";
+            var docProperties = element.Descendants(WP.docPr);
+            uint highestId = 0;
+            foreach (var docPr in docProperties)
+            {
+                var currentId = uint.Parse(docPr.Attribute(attribName).Value);
+                if (currentId > highestId)
+                {
+                    highestId = currentId;
+                }
+            }
+
+            highestId++;
+            List<uint> idList = new List<uint>();
+            foreach (var docPr in docProperties)
+            {
+                var currentId = uint.Parse(docPr.Attribute(attribName).Value);
+                if (idList.Contains(currentId))
+                {
+                    // Duplicate id, update to a newer id
+                    docPr.Attribute(attribName).SetValue(highestId);
+                    highestId++;
+                }
+                else
+                {
+                    idList.Add(currentId);
+                }
+            }
+        }
+
         private static void ProcessImages(WordprocessingDocument doc, OpenXmlPart part)
         {
             XDocument xDoc = part.GetXDocument();
@@ -114,6 +146,11 @@ namespace OpenXmlPowerTools
 
             // Add image files aswell as update placeholder relationship ids
             InsertImagesUpdateRelationships(xDocRoot, doc.MainDocumentPart);
+
+            // Changes any duplicated docpr id's
+            // These id's are supposed to be unique throughout the doc, since this runs per part;
+            // if there are images in another part like the header/footer, this won't catch them and you could generate a malformed document
+            EnsureUniqueDocumentProperties(xDocRoot);
 
             xDoc.Elements().First().ReplaceWith(xDocRoot);
             part.PutXDocument();
