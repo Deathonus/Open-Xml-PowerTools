@@ -85,16 +85,30 @@ namespace OpenXmlPowerTools
                 {
                     if (imagePathDictonary.ContainsKey(rId.Value))
                     {
-                        var ext = new System.IO.FileInfo(imagePathDictonary[rId.Value]).Extension.ToLower();
+                        var ext = Path.GetExtension(imagePathDictonary[rId.Value]).ToLower();
 
                         if (imagePartTypes.ContainsKey(ext))
                         {
                             var imagePart = mainDocPart.AddImagePart(imagePartTypes[ext]);
 
-                            using (var stream = new FileStream(imagePathDictonary[rId.Value], FileMode.Open))
+                            if (File.Exists(imagePathDictonary[rId.Value]))
                             {
-                                imagePart.FeedData(stream);
+                                using (var stream = new FileStream(imagePathDictonary[rId.Value], FileMode.Open))
+                                {
+                                    imagePart.FeedData(stream);
+                                }
                             }
+                            else
+                            {
+                                using (var client = new System.Net.WebClient())
+                                {
+                                    using (var stream = new MemoryStream(client.DownloadData(imagePathDictonary[rId.Value])))
+                                    {
+                                        imagePart.FeedData(stream);
+                                    }
+                                }
+                            }
+
                             blip.Attribute(R.embed).SetValue(mainDocPart.GetIdOfPart(imagePart));
                         }
                         else
@@ -931,10 +945,18 @@ namespace OpenXmlPowerTools
                     {
                         return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
                     }
-                    
-                    if (imagePath == null || !File.Exists(imagePath))
+
+                    if (imagePath == null)
                     {
-                        return CreateContextErrorMessage(element, "Image path was either not supplied or invalid", templateError);
+                        return CreateContextErrorMessage(element, "Image path was supplied", templateError);
+                    }
+
+                    if (!File.Exists(imagePath))
+                    {
+                        if (!(Uri.IsWellFormedUriString(imagePath, UriKind.Absolute) && Path.HasExtension(imagePath)))
+                        {
+                            return CreateContextErrorMessage(element, "Image path was invalid", templateError);
+                        }
                     }
 
                     XElement blip = element.Descendants(A.blip).FirstOrDefault();
