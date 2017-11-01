@@ -686,6 +686,7 @@ namespace OpenXmlPowerTools
                                   <xs:element name='Image'>
                                     <xs:complexType>
                                       <xs:attribute name='Select' type='xs:string' use='required' />
+                                      <xs:attribute name='Optional' type='xs:boolean' use='optional' />
                                     </xs:complexType>
                                   </xs:element>
                                 </xs:schema>",
@@ -935,15 +936,22 @@ namespace OpenXmlPowerTools
                 if (element.Name == PA.Image)
                 {
                     var xPath = (string)element.Attribute(PA.Select);
+                    var optionalString = (string)element.Attribute(PA.Optional);
+                    bool optional = (optionalString != null && optionalString.ToLower() == "true");
 
                     string imagePath;
                     try
                     {
-                        imagePath = EvaluateXPathToString(data, xPath, false);
+                        imagePath = EvaluateXPathToString(data, xPath, optional);
                     }
                     catch (XPathException e)
                     {
                         return CreateContextErrorMessage(element, "XPathException: " + e.Message, templateError);
+                    }
+
+                    if (imagePath == "" && optional)
+                    {
+                        return null;
                     }
 
                     if (imagePath == null)
